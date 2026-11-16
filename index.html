@@ -1,0 +1,180 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover">
+<title>Starlane</title>
+<style>
+  html, body { margin: 0; height: 100%; background: #0d1b2a; overflow: hidden; touch-action: none; }
+  canvas { display: block; width: 100%; height: 100%; }
+</style>
+</head>
+<body>
+<canvas id="c"></canvas>
+<script>
+const cv = document.getElementById('c'), g = cv.getContext('2d');
+let W, H, dpr;
+function resize() {
+  dpr = window.devicePixelRatio || 1;
+  W = innerWidth; H = innerHeight;
+  cv.width = W * dpr; cv.height = H * dpr;
+  g.setTransform(dpr, 0, 0, dpr, 0, 0);
+}
+addEventListener('resize', resize); resize();
+
+let best = 0;
+try { best = +localStorage.getItem('starlane-best') || 0; } catch (e) {}
+
+const keys = {};
+let touchX = null;
+let state = 'menu', score, lives, ship, bullets, rocks, sparks, stars, t, fireCd, spawnCd;
+
+stars = Array.from({ length: 70 }, () => ({ x: Math.random(), y: Math.random(), s: .3 + Math.random() * .9 }));
+
+function reset() {
+  score = 0; lives = 3; t = 0; fireCd = 0; spawnCd = 0;
+  ship = { x: W / 2, y: H - 90, hit: 0 };
+  bullets = []; rocks = []; sparks = [];
+  state = 'play';
+}
+
+function start() { if (state !== 'play') reset(); }
+
+addEventListener('keydown', e => {
+  keys[e.code] = true;
+  if (['Space', 'ArrowLeft', 'ArrowRight', 'ArrowUp', 'ArrowDown'].includes(e.code)) e.preventDefault();
+  if (e.code === 'Enter' || e.code === 'Space') start();
+});
+addEventListener('keyup', e => keys[e.code] = false);
+
+function pt(e) { const p = e.touches ? e.touches[0] : e; return p.clientX; }
+cv.addEventListener('touchstart', e => { e.preventDefault(); touchX = pt(e); start(); }, { passive: false });
+cv.addEventListener('touchmove', e => { e.preventDefault(); touchX = pt(e); }, { passive: false });
+cv.addEventListener('touchend', e => { e.preventDefault(); if (!e.touches.length) touchX = null; }, { passive: false });
+cv.addEventListener('mousedown', e => { touchX = e.clientX; start(); });
+cv.addEventListener('mousemove', e => { if (touchX !== null) touchX = e.clientX; });
+addEventListener('mouseup', () => touchX = null);
+
+function burst(x, y, n, col) {
+  for (let i = 0; i < n; i++) {
+    const a = Math.random() * 6.28, v = 1 + Math.random() * 3;
+    sparks.push({ x, y, vx: Math.cos(a) * v, vy: Math.sin(a) * v, life: 1, col });
+  }
+}
+
+function update(dt) {
+  t += dt;
+  // movement: keyboard or touch drag
+  const sp = 420 * dt;
+  if (keys.ArrowLeft || keys.KeyA) ship.x -= sp;
+  if (keys.ArrowRight || keys.KeyD) ship.x += sp;
+  if (touchX !== null) ship.x += (touchX - ship.x) * Math.min(1, dt * 14);
+  ship.x = Math.max(24, Math.min(W - 24, ship.x));
+  ship.hit = Math.max(0, ship.hit - dt);
+
+  // fire: space/up key, or any finger held down
+  fireCd -= dt;
+  if ((keys.Space || keys.ArrowUp || keys.KeyW || touchX !== null) && fireCd <= 0) {
+    bullets.push({ x: ship.x, y: ship.y - 26 });
+    fireCd = .2;
+  }
+  bullets.forEach(b => b.y -= 700 * dt);
+  bullets = bullets.filter(b => b.y > -20);
+
+  // rocks
+  spawnCd -= dt;
+  if (spawnCd <= 0) {
+    const r = 16 + Math.random() * 26;
+    rocks.push({ x: r + Math.random() * (W - 2 * r), y: -r, r, vy: 90 + Math.random() * 90 + t * 3, rot: 0, vr: (Math.random() - .5) * 3 });
+    spawnCd = Math.max(.28, .9 - t * .01);
+  }
+  rocks.forEach(k => { k.y += k.vy * dt; k.rot += k.vr * dt; });
+
+  for (const k of rocks) {
+    for (const b of bullets) {
+      if (!b.dead && Math.hypot(k.x - b.x, k.y - b.y) < k.r) {
+        b.dead = true; k.r -= 14; score += 10; burst(b.x, b.y, 5, '#ffd166');
+      }
+    }
+    if (ship.hit <= 0 && Math.hypot(k.x - ship.x, k.y - ship.y) < k.r + 14) {
+      k.r = 0; lives--; ship.hit = 1.4; burst(ship.x, ship.y, 22, '#ef476f');
+      if (navigator.vibrate) navigator.vibrate(80);
+      if (lives <= 0) {
+        state = 'over';
+        if (score > best) { best = score; try { localStorage.setItem('starlane-best', best); } catch (e) {} }
+      }
+    }
+    if (k.r <= 8 && k.r > 0) { burst(k.x, k.y, 10, '#8d99ae'); score += 25; k.r = 0; }
+  }
+  bullets = bullets.filter(b => !b.dead);
+  rocks = rocks.filter(k => k.r > 0 && k.y < H + 60);
+  sparks.forEach(s => { s.x += s.vx; s.y += s.vy; s.life -= dt * 1.8; });
+  sparks = sparks.filter(s => s.life > 0);
+}
+
+function text(str, x, y, size, col, align = 'center') {
+  g.font = `700 ${size}px "Trebuchet MS", system-ui, sans-serif`;
+  g.fillStyle = col; g.textAlign = align; g.fillText(str, x, y);
+}
+
+function draw() {
+  g.fillStyle = '#0d1b2a'; g.fillRect(0, 0, W, H);
+  for (const s of stars) {
+    const y = ((s.y * H) + (state === 'play' ? t * 40 * s.s : 0)) % H;
+    g.fillStyle = `rgba(224,225,221,${.3 + s.s * .5})`;
+    g.fillRect(s.x * W, y, s.s * 2, s.s * 2);
+  }
+  if (state !== 'menu') {
+    // rocks
+    for (const k of rocks) {
+      g.save(); g.translate(k.x, k.y); g.rotate(k.rot);
+      g.fillStyle = '#778da9'; g.strokeStyle = '#e0e1dd'; g.lineWidth = 2;
+      g.beginPath();
+      for (let i = 0; i < 7; i++) {
+        const a = i / 7 * 6.283, rr = k.r * (i % 2 ? .82 : 1);
+        g.lineTo(Math.cos(a) * rr, Math.sin(a) * rr);
+      }
+      g.closePath(); g.fill(); g.stroke(); g.restore();
+    }
+    // bullets
+    g.fillStyle = '#ffd166';
+    bullets.forEach(b => g.fillRect(b.x - 2, b.y - 10, 4, 14));
+    // ship (blinks when hit)
+    if (state === 'play' && (ship.hit <= 0 || Math.floor(t * 14) % 2)) {
+      g.fillStyle = '#e0e1dd';
+      g.beginPath(); g.moveTo(ship.x, ship.y - 26); g.lineTo(ship.x + 18, ship.y + 18);
+      g.lineTo(ship.x, ship.y + 8); g.lineTo(ship.x - 18, ship.y + 18); g.closePath(); g.fill();
+      g.fillStyle = '#ffd166';
+      g.beginPath(); g.moveTo(ship.x - 5, ship.y + 12); g.lineTo(ship.x, ship.y + 22 + Math.random() * 8); g.lineTo(ship.x + 5, ship.y + 12); g.fill();
+    }
+    for (const s of sparks) { g.globalAlpha = s.life; g.fillStyle = s.col; g.fillRect(s.x, s.y, 3, 3); }
+    g.globalAlpha = 1;
+    text('Score ' + score, 16, 34, 20, '#e0e1dd', 'left');
+    text('♥'.repeat(Math.max(0, lives)), W - 16, 34, 22, '#ef476f', 'right');
+  }
+  if (state === 'menu') {
+    text('STARLANE', W / 2, H * .36, Math.min(64, W / 7), '#ffd166');
+    text('Shoot the rocks. Don’t get hit.', W / 2, H * .36 + 40, 18, '#e0e1dd');
+    text('Keyboard: ← → or A D to move, Space to fire', W / 2, H * .55, 16, '#8d99ae');
+    text('Touch: drag to move, ship fires while you hold', W / 2, H * .55 + 26, 16, '#8d99ae');
+    text('Tap or press Enter to start', W / 2, H * .72, 22, '#e0e1dd');
+    if (best) text('Best ' + best, W / 2, H * .72 + 36, 18, '#ffd166');
+  }
+  if (state === 'over') {
+    text('Game over', W / 2, H * .4, Math.min(52, W / 8), '#ef476f');
+    text('Score ' + score + '   Best ' + best, W / 2, H * .4 + 40, 22, '#e0e1dd');
+    text('Tap or press Enter to play again', W / 2, H * .4 + 90, 18, '#8d99ae');
+  }
+}
+
+let last = performance.now();
+function loop(now) {
+  const dt = Math.min(.05, (now - last) / 1000); last = now;
+  if (state === 'play') update(dt); else if (state === 'over') { t += dt; sparks.forEach(s => { s.x += s.vx; s.y += s.vy; s.life -= dt * 1.8; }); sparks = sparks.filter(s => s.life > 0); }
+  draw();
+  requestAnimationFrame(loop);
+}
+requestAnimationFrame(loop);
+</script>
+</body>
+</html>
